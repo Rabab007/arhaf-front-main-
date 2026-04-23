@@ -182,10 +182,10 @@ button, input, select, textarea { font-family: inherit; }
 .fsel {
   width: 100%;
   padding: 12px 16px;
-  background: var(--surf);
+  background: #ffffff;
   border: 1.5px solid var(--border);
   border-radius: 10px;
-  color: var(--txt);
+  color: #000000;
   font-size: 14px;
   outline: none;
   cursor: pointer;
@@ -196,10 +196,9 @@ button, input, select, textarea { font-family: inherit; }
   border-color: var(--p1);
 }
 
-/* 🔥 حل مشكلة النص الأبيض داخل القائمة */
 .fsel option {
-  color: #000000 !important;
-  background: #ffffff !important;
+  color: #000000;
+  background: #ffffff;
 }
 
 /* ── Mode toggle ── */
