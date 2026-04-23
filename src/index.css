@@ -198,7 +198,7 @@ button, input, select, textarea { font-family: inherit; }
 
 .fsel option {
   color: #000000;
-  background: #ffffff;
+  background: red !important;
 }
 
 /* ── Mode toggle ── */
