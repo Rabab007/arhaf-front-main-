@@ -198,7 +198,7 @@ button, input, select, textarea { font-family: inherit; }
 
 .fsel option {
   color: #000000;
-  background: red !important;
+  background: ffffff !important;
 }
 
 /* ── Mode toggle ── */
@@ -2299,7 +2299,10 @@ button, input, select, textarea { font-family: inherit; }
   border-radius: .75rem; padding: .8rem 1rem; color: rgba(255,255,255,.9); outline: none;
 }
 .aa-input:focus, .aa-select:focus { border-color: rgba(122,82,255,0.5); box-shadow: 0 0 0 2px rgba(122,82,255,0.2); }
-
+.aa-select {
+  background: #ffffff !important;
+  color: #000000 !important;
+}
 .aa-gender-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
 .aa-gender-btn {
   border-radius: 1rem; padding: 1rem; border: 1px solid rgba(255,255,255,0.1);
