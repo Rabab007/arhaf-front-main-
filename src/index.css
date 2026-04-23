@@ -154,8 +154,9 @@ button, input, select, textarea { font-family: inherit; }
   background: var(--surf); border: 1.5px solid var(--border);
   border-radius: 10px; color: var(--txt); font-size: 14px; outline: none; cursor: pointer; transition: border-color .2s;
 }
-.fsel option {
-  color: #000000;
+select.fsel option {
+  color: #000 !important;
+}
 }
 .fsel:focus { border-color: var(--p1); }
 
