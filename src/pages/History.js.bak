@@ -1,0 +1,68 @@
+// src/pages/History.js
+import { useEffect } from 'react';
+import { useLang } from '../context/LangContext';
+import { useApp } from '../context/AppContext';
+import { Badge } from '../components/UI';
+
+export default function History() {
+  const { t } = useLang();
+  const { analyses, fetchAnalyses } = useApp();
+
+  useEffect(() => {
+    fetchAnalyses();
+  }, [fetchAnalyses]);
+
+  return (
+    <div className="wrap-md page-enter">
+      <h2 style={{ fontSize: 23, fontWeight: 800, marginBottom: 5 }}>
+        {t.histTitle}
+      </h2>
+
+      <p style={{ fontSize: 14, color: 'var(--muted)', marginBottom: 24 }}>
+        {t.histSub}
+      </p>
+
+      {!analyses.length ? (
+        <div className="empty">
+          <div className="empty-ico">📭</div>
+          <div className="empty-txt">{t.noAnalysis}</div>
+        </div>
+      ) : (
+        analyses.map((a, i) => {
+          const isNormal = a.prediction_result === 'TD';
+
+          return (
+            <div
+              key={a.id}
+              className="hist-item"
+              style={{ animationDelay: `${i * 0.06}s` }}
+            >
+              <div className={`hist-av ${isNormal ? 'normal' : 'attn'}`}>
+                {a.childName ? '👶' : '🧠'}
+              </div>
+
+              <div className="hist-inf">
+                <div className="hist-name">
+                  {a.childName || 'Analysis Record'}
+                </div>
+
+                <div className="hist-meta">
+                  {a.created_at
+                    ? new Date(a.created_at).toLocaleDateString()
+                    : a.date || '-'}
+                </div>
+              </div>
+
+              <div className="hist-conf">
+                <div className="hist-cv">{a.confidence_score}%</div>
+                <div className="hist-cl">{t.confidence}</div>
+              </div>
+
+              <Badge type={a.prediction_result} />
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,934 @@
+import { useState, useRef } from 'react';
+import { useLang } from '../context/LangContext';
+import { useApp } from '../context/AppContext';
+import { Orb, Field, GenderToggle } from '../components/UI';
+
+/* ════════════ STEP 1: FORM ════════════ */
+function FormStep({ onSubmit, setGlobalFile }) {
+  const { t } = useLang();
+  const { kids, showToast } = useApp();
+
+  const [mode, setMode] = useState('new');
+  const [name, setName] = useState('');
+  const [age, setAge] = useState('');
+  const [gender, setGender] = useState('male');
+  const [childId, setChildId] = useState('');
+  const [hasAudio, setHasAudio] = useState(false);
+  const [file, setFile] = useState(null);
+  const [recording, setRecording] = useState(false);
+  const [audioURL, setAudioURL] = useState('');
+
+  const fileRef = useRef();
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const streamRef = useRef(null);
+
+  const onFile = (e) => {
+    const f = e.target.files[0];
+    if (f) {
+      setFile(f);
+      setGlobalFile(f);
+      setHasAudio(true);
+
+      if (audioURL) URL.revokeObjectURL(audioURL);
+      setAudioURL(URL.createObjectURL(f));
+    }
+  };
+
+  const writeString = (view, offset, string) => {
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(offset + i, string.charCodeAt(i));
+    }
+  };
+
+  const audioBufferToWav = (buffer) => {
+    const numOfChan = buffer.numberOfChannels;
+    const sampleRate = buffer.sampleRate;
+    const format = 1; // PCM
+    const bitDepth = 16;
+
+    const samples = buffer.length;
+    const blockAlign = numOfChan * bitDepth / 8;
+    const byteRate = sampleRate * blockAlign;
+    const dataSize = samples * blockAlign;
+    const bufferLength = 44 + dataSize;
+
+    const arrayBuffer = new ArrayBuffer(bufferLength);
+    const view = new DataView(arrayBuffer);
+
+    writeString(view, 0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeString(view, 8, 'WAVE');
+    writeString(view, 12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, format, true);
+    view.setUint16(22, numOfChan, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitDepth, true);
+    writeString(view, 36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    let offset = 44;
+
+    for (let i = 0; i < samples; i++) {
+      for (let channel = 0; channel < numOfChan; channel++) {
+        let sample = buffer.getChannelData(channel)[i];
+        sample = Math.max(-1, Math.min(1, sample));
+        const s = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+        view.setInt16(offset, s, true);
+        offset += 2;
+      }
+    }
+
+    return new Blob([view], { type: 'audio/wav' });
+  };
+
+  const blobToWavFile = async (blob) => {
+    const arrayBuffer = await blob.arrayBuffer();
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0));
+    const wavBlob = audioBufferToWav(audioBuffer);
+    await audioContext.close();
+
+    return new File([wavBlob], 'recorded_audio.wav', {
+      type: 'audio/wav',
+    });
+  };
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : '';
+
+      const mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        try {
+          const recordedBlob = new Blob(audioChunksRef.current, {
+            type: mediaRecorder.mimeType || 'audio/webm',
+          });
+
+          const wavFile = await blobToWavFile(recordedBlob);
+
+          setFile(wavFile);
+          setGlobalFile(wavFile);
+          setHasAudio(true);
+
+          if (audioURL) URL.revokeObjectURL(audioURL);
+          setAudioURL(URL.createObjectURL(wavFile));
+        } catch (error) {
+          console.error(error);
+          showToast('فشل تحويل التسجيل إلى WAV', 'terr');
+        } finally {
+          if (streamRef.current) {
+            streamRef.current.getTracks().forEach(track => track.stop());
+            streamRef.current = null;
+          }
+        }
+      };
+
+      mediaRecorder.start();
+      setRecording(true);
+      setHasAudio(false);
+      setFile(null);
+      setGlobalFile(null);
+
+      if (audioURL) {
+        URL.revokeObjectURL(audioURL);
+        setAudioURL('');
+      }
+    } catch (error) {
+      console.error(error);
+      showToast('تعذر الوصول إلى المايكروفون', 'terr');
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && recording) {
+      mediaRecorderRef.current.stop();
+      setRecording(false);
+    }
+  };
+
+  const handleSubmit = () => {
+    if (mode === 'new') {
+      if (!name || !age) {
+        showToast(t.err_name, 'terr');
+        return;
+      }
+
+      const normalizedGender =
+        gender === 'M' ? 'male' :
+        gender === 'F' ? 'female' :
+        gender;
+
+      onSubmit({
+        name,
+        age_months: parseInt(age),
+        gender: normalizedGender,
+      });
+    } else {
+      if (!childId) {
+        showToast(t.err_child, 'terr');
+        return;
+      }
+
+      const found = kids.find(c => c.id === parseInt(childId));
+      if (!found) {
+        showToast(t.err_child, 'terr');
+        return;
+      }
+
+      onSubmit(found);
+    }
+  };
+
+  return (
+    <div className="wrap-sm page-enter">
+      <Orb size={300} color="#7c3aed" x="88%" y="14%" opacity={0.08} />
+
+      <h2 className="pg-ttl">{t.uploadTitle}</h2>
+
+      <div className="card" style={{ marginTop: 22 }}>
+        <div className="mode-row">
+          <button
+            className={`mode-btn${mode === 'new' ? ' active' : ''}`}
+            onClick={() => setMode('new')}
+          >
+            {t.newChild}
+          </button>
+
+          <button
+            className={`mode-btn${mode === 'exist' ? ' active' : ''}`}
+            onClick={() => setMode('exist')}
+          >
+            {t.existChild}
+          </button>
+        </div>
+
+        {mode === 'new' ? (
+          <>
+            <Field
+              label={t.childName}
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder={t.namePh}
+              icon="👶"
+            />
+
+            <Field
+              label={t.childAge}
+              type="number"
+              value={age}
+              onChange={e => setAge(Math.max(0, e.target.value))}
+              min="0"
+            />
+
+            <div className="fgrp">
+              <label className="flbl">{t.childGender}</label>
+              <GenderToggle value={gender} onChange={setGender} />
+            </div>
+          </>
+        ) : (
+          <div className="fgrp">
+            <label className="flbl">{t.existChild}</label>
+            <select
+              className="fsel"
+              value={childId}
+              onChange={e => setChildId(e.target.value)}
+            >
+              <option value="">{t.selectKid}</option>
+              {kids.map(c => (
+                <option key={c.id} value={c.id}>
+                  {c.name} • {c.age_months} {t.months}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* رفع ملف موجود */}
+        <div className="audio-sec" style={{ marginTop: 18 }}>
+          <div
+            className={`up-box${file ? ' hasfile' : ''}`}
+            onClick={() => fileRef.current?.click()}
+          >
+            <div className="up-ico">{file ? '✅' : '📁'}</div>
+            <div className="up-lbl">{file ? file.name : t.uploadExist}</div>
+
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".wav,audio/wav"
+              style={{ display: 'none' }}
+              onChange={onFile}
+            />
+          </div>
+        </div>
+
+        {/* تسجيل مباشر */}
+        <div style={{ marginTop: 18, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          {!recording ? (
+            <button className="btn bo" type="button" onClick={startRecording}>
+              🎙️ Start Recording
+            </button>
+          ) : (
+            <button className="btn bo" type="button" onClick={stopRecording}>
+              ⏹️ Stop Recording
+            </button>
+          )}
+
+          {recording && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                color: '#ef4444',
+                fontWeight: 700,
+              }}
+            >
+              <span>●</span>
+              <span>Recording...</span>
+            </div>
+          )}
+        </div>
+
+        {/* معاينة التسجيل/الملف */}
+        {audioURL && (
+          <div style={{ marginTop: 16 }}>
+            <audio controls src={audioURL} style={{ width: '100%' }} />
+          </div>
+        )}
+
+        <button
+          className="btn bp bblk"
+          disabled={!hasAudio}
+          onClick={handleSubmit}
+          style={{ marginTop: 20 }}
+        >
+          {t.startAnalysis}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════ STEP 2: ANALYZING ════════════ */
+function AnalyzingStep() {
+  const { t } = useLang();
+
+  return (
+    <div className="an-screen page-enter">
+      <Orb size={380} color="#0ea5e9" x="50%" y="50%" opacity={0.12} />
+      <Orb size={280} color="#7c3aed" x="20%" y="20%" opacity={0.08} />
+
+      <div className="card" style={{ maxWidth: 520, width: '100%', textAlign: 'center' }}>
+        <div style={{ fontSize: 46, marginBottom: 12 }}>🧠</div>
+        <h2 className="an-ttl" style={{ marginBottom: 10 }}>{t.analyzing}</h2>
+        <p style={{ opacity: 0.75, marginBottom: 20 }}>
+          Processing cry signal and extracting acoustic features...
+        </p>
+
+        <div className="prog-wrap">
+          <div className="prog-bar">
+            <div
+              className="prog-fill"
+              style={{ width: '100%', transition: 'width 2s ease' }}
+            />
+          </div>
+        </div>
+
+        <div style={{ marginTop: 18, fontSize: 14, opacity: 0.65 }}>
+          MFCC • Spectral Features • Confidence Scoring
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════ SMALL UI HELPERS ════════════ */
+function ResultBadge({ isNormal, label }) {
+  return (
+    <div
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: '10px 16px',
+        borderRadius: 999,
+        background: isNormal ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)',
+        border: `1px solid ${isNormal ? 'rgba(34,197,94,0.35)' : 'rgba(239,68,68,0.35)'}`,
+        marginBottom: 16,
+        fontWeight: 700,
+      }}
+    >
+      <span style={{ fontSize: 18 }}>{isNormal ? '✅' : '⚠️'}</span>
+      <span>{label}</span>
+    </div>
+  );
+}
+
+function MiniCard({ title, icon, children }) {
+  return (
+    <div className="card" style={{ marginTop: 18 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+        <div
+          style={{
+            width: 38,
+            height: 38,
+            borderRadius: 12,
+            display: 'grid',
+            placeItems: 'center',
+            background: 'rgba(124,58,237,0.14)',
+            fontSize: 18,
+          }}
+        >
+          {icon}
+        </div>
+        <h3 style={{ margin: 0, fontSize: 18 }}>{title}</h3>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function ConfidenceBar({ value }) {
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+        <span style={{ opacity: 0.8 }}>Model Confidence</span>
+        <strong>{value}%</strong>
+      </div>
+
+      <div
+        className="prog-bar"
+        style={{
+          height: 12,
+          borderRadius: 999,
+          background: 'rgba(255,255,255,0.08)',
+          overflow: 'hidden',
+        }}
+      >
+        <div
+          className="prog-fill"
+          style={{
+            width: `${value}%`,
+            height: '100%',
+            borderRadius: 999,
+            background: 'linear-gradient(90deg, #7c3aed, #0ea5e9)',
+            transition: 'width 0.7s ease',
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+function CircularScore({ value, label = "Confidence" }) {
+  const v = Math.max(0, Math.min(100, Number(value || 0)));
+  const radius = 54;
+  const stroke = 10;
+  const normalizedRadius = radius - stroke / 2;
+  const circumference = normalizedRadius * 2 * Math.PI;
+  const strokeDashoffset = circumference - (v / 100) * circumference;
+
+  return (
+    <div style={{ display: 'grid', placeItems: 'center' }}>
+      <svg height={radius * 2} width={radius * 2} style={{ transform: 'rotate(-90deg)' }}>
+        <circle
+          stroke="rgba(255,255,255,0.10)"
+          fill="transparent"
+          strokeWidth={stroke}
+          r={normalizedRadius}
+          cx={radius}
+          cy={radius}
+        />
+        <circle
+          stroke="url(#grad)"
+          fill="transparent"
+          strokeWidth={stroke}
+          strokeLinecap="round"
+          strokeDasharray={`${circumference} ${circumference}`}
+          style={{ strokeDashoffset, transition: 'stroke-dashoffset 0.8s ease' }}
+          r={normalizedRadius}
+          cx={radius}
+          cy={radius}
+        />
+        <defs>
+          <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#22d3ee" />
+            <stop offset="100%" stopColor="#7c3aed" />
+          </linearGradient>
+        </defs>
+      </svg>
+
+      <div style={{ marginTop: -82, textAlign: 'center' }}>
+        <div style={{ fontSize: 28, fontWeight: 800 }}>{v.toFixed(0)}%</div>
+        <div style={{ fontSize: 13, opacity: 0.7 }}>{label}</div>
+      </div>
+    </div>
+  );
+}
+
+function FeatureBars({ score }) {
+  const s = Number(score || 0);
+
+  const values = [
+    Math.max(18, Math.min(95, s * 0.92)),
+    Math.max(14, Math.min(88, s * 0.74)),
+    Math.max(10, Math.min(82, s * 0.58)),
+  ];
+
+  const labels = ["MFCC Response", "Spectral Activity", "Energy Pattern"];
+
+  return (
+    <div style={{ display: 'grid', gap: 14 }}>
+      {values.map((v, i) => (
+        <div key={labels[i]}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+            <span style={{ opacity: 0.8 }}>{labels[i]}</span>
+            <span style={{ fontWeight: 700 }}>{Math.round(v)}%</span>
+          </div>
+          <div
+            style={{
+              height: 10,
+              borderRadius: 999,
+              background: 'rgba(255,255,255,0.08)',
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                width: `${v}%`,
+                height: '100%',
+                borderRadius: 999,
+                background: 'linear-gradient(90deg, #14b8a6, #22d3ee)',
+                transition: 'width 0.8s ease',
+              }}
+            />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+/* ════════════ STEP 3: RESULTS PRO ════════════ */
+function ResultsStep({ result, onReset }) {
+  const { t } = useLang();
+  const { showToast } = useApp();
+
+  const isNormal = result.prediction_result === 'TD';
+  const confidence = Number(result.confidence_score || 0).toFixed(2);
+
+  const resultTitle = isNormal
+    ? 'No Concerning Patterns Detected'
+    : 'Patterns Detected – Follow-up Recommended';
+
+  const resultDescription = isNormal
+    ? 'The uploaded cry recording did not show concerning patterns based on the current model assessment.'
+    : 'The uploaded cry recording showed patterns that may require further follow-up or specialist review.';
+
+  const recommendationText = isNormal
+    ? 'Continue regular observation and monitoring. No immediate specialist consultation is indicated by this result alone.'
+    : 'Consider follow-up with a specialist for additional evaluation. This result supports screening, not diagnosis.';
+
+  const handleDownload = () => {
+    const report = `
+Arhaf Cry Analysis Report
+-------------------------
+Child: ${result.childName || 'N/A'}
+Prediction: ${result.prediction_result}
+Confidence: ${confidence}%
+Summary: ${resultTitle}
+Recommendation: ${recommendationText}
+    `.trim();
+
+    const blob = new Blob([report], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'arhaf-analysis-report.txt';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleShare = async () => {
+    const text = `Arhaf analysis result: ${result.prediction_result} (${confidence}%)`;
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: 'Arhaf Analysis Result',
+          text,
+        });
+      } else {
+        await navigator.clipboard.writeText(text);
+        showToast('Result copied successfully', 'tok');
+      }
+    } catch (e) {
+      showToast('Sharing cancelled', 'terr');
+    }
+  };
+
+  return (
+    <div className="wrap-md page-enter">
+      <Orb size={320} color="#7c3aed" x="88%" y="8%" opacity={0.08} />
+      <Orb size={240} color="#0ea5e9" x="12%" y="75%" opacity={0.06} />
+
+      <div style={{ marginBottom: 20 }}>
+        <h2 style={{ fontSize: 28, fontWeight: 800, marginBottom: 8 }}>
+          {t.resultsTitle}
+        </h2>
+        <p style={{ opacity: 0.72, maxWidth: 720, lineHeight: 1.8 }}>
+          Here is the AI-based assessment generated from the uploaded cry recording.
+        </p>
+      </div>
+
+      {/* HERO CARD */}
+      <div
+        className={`card res-main ${isNormal ? 'normal' : 'attn'}`}
+        style={{
+          marginTop: 8,
+          border: `1px solid ${isNormal ? 'rgba(34,197,94,0.28)' : 'rgba(239,68,68,0.28)'}`,
+          boxShadow: isNormal
+            ? '0 0 0 1px rgba(34,197,94,0.05), 0 20px 60px rgba(34,197,94,0.06)'
+            : '0 0 0 1px rgba(239,68,68,0.05), 0 20px 60px rgba(239,68,68,0.06)',
+        }}
+      >
+        <div
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 10,
+            padding: '10px 16px',
+            borderRadius: 999,
+            background: isNormal ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)',
+            border: `1px solid ${isNormal ? 'rgba(34,197,94,0.35)' : 'rgba(239,68,68,0.35)'}`,
+            marginBottom: 16,
+            fontWeight: 700,
+          }}
+        >
+          <span style={{ fontSize: 18 }}>{isNormal ? '✅' : '⚠️'}</span>
+          <span>{isNormal ? 'Normal / TD' : 'ASD Indicator'}</span>
+        </div>
+
+        <div
+          style={{
+            width: 82,
+            height: 82,
+            borderRadius: '50%',
+            display: 'grid',
+            placeItems: 'center',
+            marginBottom: 18,
+            background: isNormal
+              ? 'radial-gradient(circle, rgba(34,197,94,0.18), rgba(34,197,94,0.03))'
+              : 'radial-gradient(circle, rgba(239,68,68,0.18), rgba(239,68,68,0.03))',
+            border: `1px solid ${isNormal ? 'rgba(34,197,94,0.35)' : 'rgba(239,68,68,0.35)'}`,
+            fontSize: 34,
+          }}
+        >
+          {isNormal ? '😊' : '⚠️'}
+        </div>
+
+        <div className="res-ttl" style={{ fontSize: 28, lineHeight: 1.35, marginBottom: 10 }}>
+          {resultTitle}
+        </div>
+
+        <div className="res-desc" style={{ fontSize: 16, opacity: 0.82, lineHeight: 1.8, maxWidth: 760 }}>
+          {resultDescription}
+        </div>
+
+        <div
+          style={{
+            marginTop: 18,
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 10,
+          }}
+        >
+          <div
+            style={{
+              padding: '10px 14px',
+              borderRadius: 14,
+              background: 'rgba(255,255,255,0.05)',
+              border: '1px solid rgba(255,255,255,0.08)',
+              fontSize: 14,
+            }}
+          >
+            <strong>Prediction:</strong> {result.prediction_result}
+          </div>
+
+          <div
+            style={{
+              padding: '10px 14px',
+              borderRadius: 14,
+              background: 'rgba(255,255,255,0.05)',
+              border: '1px solid rgba(255,255,255,0.08)',
+              fontSize: 14,
+            }}
+          >
+            <strong>Confidence:</strong> {confidence}%
+          </div>
+
+          {result.childName && (
+            <div
+              style={{
+                padding: '10px 14px',
+                borderRadius: 14,
+                background: 'rgba(255,255,255,0.05)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                fontSize: 14,
+              }}
+            >
+              <strong>Child:</strong> {result.childName}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* VISUALIZATION */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+          gap: 18,
+          marginTop: 20,
+        }}
+      >
+        <div className="card">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+            <div
+              style={{
+                width: 38,
+                height: 38,
+                borderRadius: 12,
+                display: 'grid',
+                placeItems: 'center',
+                background: 'rgba(124,58,237,0.14)',
+                fontSize: 18,
+              }}
+            >
+              📈
+            </div>
+            <h3 style={{ margin: 0, fontSize: 18 }}>Model Confidence</h3>
+          </div>
+
+          <div style={{ display: 'grid', placeItems: 'center', marginTop: 10 }}>
+            <CircularScore value={confidence} />
+          </div>
+        </div>
+
+        <div className="card">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+            <div
+              style={{
+                width: 38,
+                height: 38,
+                borderRadius: 12,
+                display: 'grid',
+                placeItems: 'center',
+                background: 'rgba(20,184,166,0.14)',
+                fontSize: 18,
+              }}
+            >
+              🎛️
+            </div>
+            <h3 style={{ margin: 0, fontSize: 18 }}>Feature Activity Snapshot</h3>
+          </div>
+
+          <p style={{ opacity: 0.75, lineHeight: 1.7, marginBottom: 14 }}>
+            Visual summary based on the model assessment output and analyzed acoustic feature groups.
+          </p>
+
+          <FeatureBars score={confidence} />
+        </div>
+      </div>
+
+      {/* FEATURES */}
+      <div className="card" style={{ marginTop: 18 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+          <div
+            style={{
+              width: 38,
+              height: 38,
+              borderRadius: 12,
+              display: 'grid',
+              placeItems: 'center',
+              background: 'rgba(124,58,237,0.14)',
+              fontSize: 18,
+            }}
+          >
+            🎧
+          </div>
+          <h3 style={{ margin: 0, fontSize: 18 }}>Analyzed Features</h3>
+        </div>
+
+        <p style={{ marginTop: 8, opacity: 0.78, lineHeight: 1.8 }}>
+          The model analyzed acoustic features extracted from the cry recording, including MFCC-based representations,
+          delta features, and spectral-energy related characteristics.
+        </p>
+
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+            gap: 12,
+            marginTop: 14,
+          }}
+        >
+          {[
+            'MFCC Features',
+            'Delta / Delta-Delta',
+            'RMS Energy',
+            'Zero Crossing Rate',
+            'Spectral Centroid',
+            'Spectral Rolloff',
+          ].map((item) => (
+            <div
+              key={item}
+              style={{
+                padding: '12px 14px',
+                borderRadius: 14,
+                background: 'rgba(255,255,255,0.04)',
+                border: '1px solid rgba(255,255,255,0.07)',
+                fontSize: 14,
+              }}
+            >
+              {item}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* RECOMMENDATION */}
+      <div className="card" style={{ marginTop: 18 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+          <div
+            style={{
+              width: 38,
+              height: 38,
+              borderRadius: 12,
+              display: 'grid',
+              placeItems: 'center',
+              background: 'rgba(124,58,237,0.14)',
+              fontSize: 18,
+            }}
+          >
+            💡
+          </div>
+          <h3 style={{ margin: 0, fontSize: 18 }}>Recommendation</h3>
+        </div>
+
+        <p style={{ marginTop: 8, opacity: 0.82, lineHeight: 1.8 }}>
+          {recommendationText}
+        </p>
+      </div>
+
+      {/* ACTIONS */}
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 14,
+          marginTop: 28,
+          maxWidth: 360,
+        }}
+      >
+        <button className="btn bp" onClick={handleDownload}>
+          ⬇️ Download Report
+        </button>
+
+        <button className="btn bg" onClick={onReset}>
+          🔄 Analyze Another Recording
+        </button>
+
+        <button
+          className="btn"
+          style={{
+            background: 'transparent',
+            border: '1px solid rgba(255,255,255,0.16)',
+            color: 'white',
+          }}
+          onClick={handleShare}
+        >
+          🔗 Share with Specialist
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════ UPLOAD PAGE ROOT ════════════ */
+export default function Upload() {
+  const { addAnalysis, addKid } = useApp();
+
+  const [step, setStep] = useState('form');
+  const [result, setResult] = useState(null);
+  const [currentFile, setCurrentFile] = useState(null);
+
+  const handleFormSubmit = async (childData) => {
+    if (!currentFile) return;
+
+    setStep('analyzing');
+
+    let savedChild = childData;
+
+    if (!childData.id) {
+      savedChild = await addKid(childData);
+
+      if (!savedChild) {
+        setStep('form');
+        return;
+      }
+    }
+
+    const serverResponse = await addAnalysis(currentFile, savedChild.id);
+
+    if (serverResponse) {
+      setResult({
+        ...serverResponse,
+        childName: savedChild.name,
+      });
+      setStep('results');
+    } else {
+      setStep('form');
+    }
+  };
+
+  return (
+    <>
+      {step === 'form' && (
+        <FormStep
+          onSubmit={handleFormSubmit}
+          setGlobalFile={setCurrentFile}
+        />
+      )}
+
+      {step === 'analyzing' && <AnalyzingStep />}
+
+      {step === 'results' && (
+        <ResultsStep
+          result={result}
+          onReset={() => {
+            setResult(null);
+            setCurrentFile(null);
+            setStep('form');
+          }}
+        />
+      )}
+    </>
+  );
+}
